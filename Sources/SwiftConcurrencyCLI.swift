@@ -6,12 +6,13 @@
 //
 
 import Foundation
+import AsyncAlgorithms
 
 @available(macOS 10.15, *)
 @main
 struct SwiftConcurrencyCLI {
     static func main() async {
-
+        await jobber(for: .seconds(10))
     }
     
     static func sender() async {
@@ -29,27 +30,50 @@ struct SwiftConcurrencyCLI {
         }
     }
     
-    static func jobber() async {
-        do {
-            let jobSupervisor = JobSupervisor()
-            try await jobSupervisor.startJob(maxRetries: 5, work: goodJob)
-            try await jobSupervisor.startJob(maxRetries: 3, work: badJob)
-            try await jobSupervisor.startJob(maxRetries: 4, work: badJob)
-            try await jobSupervisor.startJob(maxRetries: 2, work: doomedJob)
-            try await jobSupervisor.startJob(maxRetries: 1, work: goodJob)
-    
-            while (await jobSupervisor.finished() == false) {
-                let runningJobs = await jobSupervisor.running()
-                print("Running jobs: ", runningJobs)
-                try await Task.sleep(nanoseconds: UInt64(0.3 * Double(NSEC_PER_SEC)))
+    static func jobber(for duration: Duration) async {
+        let channel = AsyncChannel<(String, JobStatus)>()
+        let timer = AsyncTimerSequence(interval: .seconds(1), clock: .suspending)
+        
+        let t = Task {
+            for await _ in timer {
+                let randomJob = Int.random(in: 1...3)
+                let randomMaxRetries = Int.random(in: 1...4)
+                if randomJob == 1 {
+                    _  = Job(
+                        channel: channel,
+                        id: randomId(),
+                        maxRetries: randomMaxRetries,
+                        work: goodJob
+                    )
+                } else if randomJob == 2 {
+                    _  = Job(
+                        channel: channel,
+                        id: randomId(),
+                        maxRetries: randomMaxRetries,
+                        work: badJob
+                    )
+                } else {
+                    _  = Job(
+                        channel: channel,
+                        id: randomId(),
+                        maxRetries: randomMaxRetries,
+                        work: doomedJob
+                    )
+                }
             }
-    
-            let jobs = await jobSupervisor.jobs
-            for (_, job) in jobs {
-                print(await job.debug())
-            }
-        } catch {
-            print(error)
         }
+        
+        Task {
+            print("Begin!")
+            try await Task.sleep(for: duration)
+            print("Stop!")
+            t.cancel()
+            channel.finish()
+        }
+        
+        for await (jobId, jobStatus) in channel {
+            print("=== ID: \(jobId), Status: \(jobStatus)")
+        }
+        print("End!")
     }
 }

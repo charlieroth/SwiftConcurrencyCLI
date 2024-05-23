@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import AsyncAlgorithms
 
 func randomId() -> String {
   let letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -29,31 +30,39 @@ enum JobStatus {
 }
 
 actor Job {
+    var channel: AsyncChannel<(String, JobStatus)>
     var id: String
     var maxRetries: Int
     var status: JobStatus = .new
     var work: () async throws -> JobWorkResult
     
-    init(id: String, maxRetries: Int, work: @escaping () async throws -> JobWorkResult) {
+    init(channel: AsyncChannel<(String, JobStatus)>, id: String, maxRetries: Int, work: @escaping () async throws -> JobWorkResult) {
         self.work = work
         self.maxRetries = maxRetries
         self.id = id
+        self.channel = channel
+        
+        Task {
+            let status = await run()
+            await channel.send((id, status))
+        }
     }
     
-    func run() async {
+    func run() async -> JobStatus {
+        print("Job started: \(id)")
         var tries: Int = 0
         while tries < self.maxRetries {
             tries += 1
             // If work throws an error, declare it failed and exit
             guard let workResult = try? await self.work() else {
                 self.status = .failed
-                return
+                return .failed
             }
             
             if workResult == .success {
                 self.status = JobStatus.done
                 print("Job completed: \(self.id)")
-                return
+                return .done
             } else if workResult == .failure {
                 if self.status == .new {
                     self.status = .errored
@@ -65,48 +74,27 @@ actor Job {
         }
         // If Job fails to succeed before maxRetries, declared it failed and exit
         self.status = .failed
-    }
-    
-    func debug() -> String {
-        return "id: \(id), status: \(status)"
+        return .failed
     }
 }
 
-@available(macOS 10.15, *)
-actor JobSupervisor {
-    var jobs: [String:Job] = [:]
-    
-    func startJob(maxRetries: Int, work: @escaping () async throws -> JobWorkResult) throws -> Void {
-        let id = randomId()
-        let job = Job(id: id, maxRetries: maxRetries, work: work)
-        self.jobs[id] = job
-        Task.detached {
-            await job.run()
-        }
-    }
-    
-    func finished() async -> Bool {
-        var statuses: [JobStatus] = []
-
-        for (_, job) in self.jobs {
-            let status = await job.status
-            statuses.append(status)
-        }
-
-        return statuses.allSatisfy { status in
-            status == .done || status == .failed
-        }
-    }
-    
-    func running() async -> [(String, JobStatus)] {
-        var jobs: [(String, JobStatus)] = []
-        for (id, job) in self.jobs {
-            let status = await job.status
-            jobs.append((id, status))
-        }
-        return jobs
-    }
-}
+//@available(macOS 10.15, *)
+//actor Jobber {
+//    var channel: AsyncChannel<(String, JobStatus)>
+//    
+//    init(channel: AsyncChannel<(String, JobStatus)>) {
+//        self.channel = channel
+//    }
+//    
+//    func enqueue(maxRetries: Int, work: @escaping () async throws -> JobWorkResult) async -> Void {
+//        let id = randomId()
+//        let job = Job(id: id, maxRetries: maxRetries, work: work)
+//        Task {
+//            let status = await job.run()
+//            await self.channel.send((id, status))
+//        }
+//    }
+//}
 
 @available(macOS 10.15, *)
 func goodJob() async throws -> JobWorkResult {
