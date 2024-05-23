@@ -8,11 +8,11 @@
 import Foundation
 import AsyncAlgorithms
 
-@available(macOS 10.15, *)
 @main
 struct SwiftConcurrencyCLI {
     static func main() async {
-        await jobber(for: .seconds(10))
+        // await sender()
+        try? await jobber(numJobs: 10, inspectEvery: .seconds(1))
     }
     
     static func sender() async {
@@ -30,50 +30,41 @@ struct SwiftConcurrencyCLI {
         }
     }
     
-    static func jobber(for duration: Duration) async {
-        let channel = AsyncChannel<(String, JobStatus)>()
-        let timer = AsyncTimerSequence(interval: .seconds(1), clock: .suspending)
+    static func jobber(numJobs: Int, inspectEvery interval: Duration) async throws {
+        let jobSupervisor = JobSupervisor()
+        let jobber = Jobber(jobSupervisor: jobSupervisor)
         
-        let t = Task {
-            for await _ in timer {
-                let randomJob = Int.random(in: 1...3)
-                let randomMaxRetries = Int.random(in: 1...4)
-                if randomJob == 1 {
-                    _  = Job(
-                        channel: channel,
-                        id: randomId(),
-                        maxRetries: randomMaxRetries,
-                        work: goodJob
-                    )
-                } else if randomJob == 2 {
-                    _  = Job(
-                        channel: channel,
-                        id: randomId(),
-                        maxRetries: randomMaxRetries,
-                        work: badJob
-                    )
+        // Start supervisor to receive work
+        Task {
+            await jobSupervisor.start()
+        }
+        
+        // Start some jobs
+        for i in 0..<numJobs {
+            if i == 5 {
+                await jobber.startJob(workType: .doomed)
+            } else {
+                if i.isMultiple(of: 2) {
+                    await jobber.startJob(workType: .good)
                 } else {
-                    _  = Job(
-                        channel: channel,
-                        id: randomId(),
-                        maxRetries: randomMaxRetries,
-                        work: doomedJob
-                    )
+                    await jobber.startJob(workType: .bad)
                 }
             }
         }
         
-        Task {
-            print("Begin!")
-            try await Task.sleep(for: duration)
-            print("Stop!")
-            t.cancel()
-            channel.finish()
+        // Every `interval` seconds, query the running jobs
+        var runningJobs = await jobber.running()
+        while runningJobs.count > 0 {
+            print("Running jobs: \(runningJobs)")
+            try await Task.sleep(for: interval)
+            runningJobs = await jobber.running()
         }
         
-        for await (jobId, jobStatus) in channel {
-            print("=== ID: \(jobId), Status: \(jobStatus)")
+        // View final results
+        print("~~~~ Final Job Results ~~~~")
+        for (id, jobResult) in await jobSupervisor.jobs {
+            print("[\(id)]: \(jobResult)")
         }
-        print("End!")
+        print("~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     }
 }

@@ -8,6 +8,23 @@
 import Foundation
 import AsyncAlgorithms
 
+func goodJob() async throws -> JobWorkResult {
+    let randomSeconds = Int.random(in: 1...3)
+    try await Task.sleep(for: .seconds(randomSeconds))
+    return JobWorkResult.success
+}
+
+func badJob() async throws -> JobWorkResult {
+    let randomSeconds = Int.random(in: 3...6)
+    try await Task.sleep(for: .seconds(randomSeconds))
+    return JobWorkResult.failure
+}
+
+func doomedJob() async throws -> JobWorkResult {
+    try await Task.sleep(for: .seconds(1))
+    throw JobWorkResultError.doomed
+}
+
 func randomId() -> String {
   let letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
   return String((0..<12).map{ _ in letters.randomElement()! })
@@ -22,94 +39,121 @@ enum JobWorkResultError: Error {
     case doomed
 }
 
+enum WorkType {
+    case good
+    case bad
+    case doomed
+}
+
 enum JobStatus {
     case new
     case errored
+    case retryLimitReached
     case failed
     case done
 }
 
+enum JobState {
+    case inProgress(Task<JobStatus, Never>)
+    case completed(JobStatus)
+}
+
 actor Job {
-    var channel: AsyncChannel<(String, JobStatus)>
     var id: String
     var maxRetries: Int
     var status: JobStatus = .new
     var work: () async throws -> JobWorkResult
     
-    init(channel: AsyncChannel<(String, JobStatus)>, id: String, maxRetries: Int, work: @escaping () async throws -> JobWorkResult) {
+    init(id: String, maxRetries: Int, work: @escaping () async throws -> JobWorkResult) {
         self.work = work
         self.maxRetries = maxRetries
         self.id = id
-        self.channel = channel
-        
-        Task {
-            let status = await run()
-            await channel.send((id, status))
-        }
     }
     
     func run() async -> JobStatus {
-        print("Job started: \(id)")
+        print("[\(self.id)]: started")
         var tries: Int = 0
         while tries < self.maxRetries {
             tries += 1
-            // If work throws an error, declare it failed and exit
             guard let workResult = try? await self.work() else {
+                print("[\(self.id)]: failed")
                 self.status = .failed
                 return .failed
             }
             
             if workResult == .success {
                 self.status = JobStatus.done
-                print("Job completed: \(self.id)")
+                print("[\(self.id)]: done")
                 return .done
             } else if workResult == .failure {
                 if self.status == .new {
                     self.status = .errored
-                    print("Job errored: \(self.id)")
+                    print("[\(self.id)]: errored")
                 } else if self.status == .errored {
-                    print("Job retry failed: \(self.id)")
+                    print("[\(self.id)]: retry failed")
                 }
             }
         }
-        // If Job fails to succeed before maxRetries, declared it failed and exit
-        self.status = .failed
-        return .failed
+        
+        print("[\(self.id)]: retry limit reached")
+        self.status = .retryLimitReached
+        return .retryLimitReached
     }
 }
 
-//@available(macOS 10.15, *)
-//actor Jobber {
-//    var channel: AsyncChannel<(String, JobStatus)>
-//    
-//    init(channel: AsyncChannel<(String, JobStatus)>) {
-//        self.channel = channel
-//    }
-//    
-//    func enqueue(maxRetries: Int, work: @escaping () async throws -> JobWorkResult) async -> Void {
-//        let id = randomId()
-//        let job = Job(id: id, maxRetries: maxRetries, work: work)
-//        Task {
-//            let status = await job.run()
-//            await self.channel.send((id, status))
-//        }
-//    }
-//}
+actor JobSupervisor {
+    var workChannel: AsyncChannel<WorkType>
+    var jobs: [String:JobState]
+    
+    init() {
+        self.jobs = [:]
+        self.workChannel = AsyncChannel<WorkType>()
+    }
+    
+    func start() async {
+        for await workType in self.workChannel {
+            let work = switch workType  {
+            case .good:
+                goodJob
+            case .bad:
+                badJob
+            case .doomed:
+                doomedJob
+            }
 
-@available(macOS 10.15, *)
-func goodJob() async throws -> JobWorkResult {
-    try await Task.sleep(nanoseconds: UInt64(4 * Double(NSEC_PER_SEC)))
-    return JobWorkResult.success
+            Task {
+                let id = randomId()
+                let job = Job(id: id, maxRetries: 3, work: work)
+                let workTask = Task<JobStatus, Never> {
+                    let status = await job.run()
+                    return status
+                }
+                self.jobs[id] = JobState.inProgress(workTask)
+                let taskResult = await workTask.value
+                self.jobs[id] = JobState.completed(taskResult)
+            }
+        }
+    }
 }
 
-@available(macOS 10.15, *)
-func badJob() async throws -> JobWorkResult {
-    try await Task.sleep(nanoseconds: UInt64(2 * Double(NSEC_PER_SEC)))
-    return JobWorkResult.failure
-}
-
-@available(macOS 10.15, *)
-func doomedJob() async throws -> JobWorkResult {
-    try await Task.sleep(nanoseconds: UInt64(1 * Double(NSEC_PER_SEC)))
-    throw JobWorkResultError.doomed
+struct Jobber {
+    var jobSupervisor: JobSupervisor
+    
+    init(jobSupervisor: JobSupervisor) {
+        self.jobSupervisor = jobSupervisor
+    }
+    
+    func startJob(workType: WorkType) async {
+        await self.jobSupervisor.workChannel.send(workType)
+    }
+    
+    func running() async -> [String] {
+        var runningJobs: [String] = []
+        for (id, jobTask) in await self.jobSupervisor.jobs {
+            if case JobState.inProgress(_) = jobTask {
+                runningJobs.append(id)
+            }
+        }
+        return runningJobs
+    }
 }
