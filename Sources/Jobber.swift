@@ -102,54 +102,35 @@ actor Job {
 }
 
 actor JobSupervisor {
-    var workChannel: AsyncChannel<WorkType>
-    var jobs: [String:JobState]
-    
-    init() {
-        self.jobs = [:]
-        self.workChannel = AsyncChannel<WorkType>()
-    }
-    
-    func start() async {
-        for await workType in self.workChannel {
-            let work = switch workType  {
-            case .good:
-                goodJob
-            case .bad:
-                badJob
-            case .doomed:
-                doomedJob
-            }
-
-            Task {
-                let id = randomId()
-                let job = Job(id: id, maxRetries: 3, work: work)
-                let workTask = Task<JobStatus, Never> {
-                    let status = await job.run()
-                    return status
-                }
-                self.jobs[id] = JobState.inProgress(workTask)
-                let taskResult = await workTask.value
-                self.jobs[id] = JobState.completed(taskResult)
-            }
-        }
-    }
-}
-
-struct Jobber {
-    var jobSupervisor: JobSupervisor
-    
-    init(jobSupervisor: JobSupervisor) {
-        self.jobSupervisor = jobSupervisor
-    }
+    var jobs: [String:JobState] = [:]
     
     func startJob(workType: WorkType) async {
-        await self.jobSupervisor.workChannel.send(workType)
+        let work = switch workType  {
+        case .good:
+            goodJob
+        case .bad:
+            badJob
+        case .doomed:
+            doomedJob
+        }
+        
+        let id = randomId()
+        let job = Job(id: id, maxRetries: 3, work: work)
+        let workTask = Task<JobStatus, Never> {
+            let status = await job.run()
+            return status
+        }
+        self.jobs[id] = JobState.inProgress(workTask)
+
+        Task {
+            let taskResult = await workTask.value
+            self.jobs[id] = JobState.completed(taskResult)
+        }
     }
     
     func running() async -> [String] {
         var runningJobs: [String] = []
-        for (id, jobTask) in await self.jobSupervisor.jobs {
+        for (id, jobTask) in self.jobs {
             if case JobState.inProgress(_) = jobTask {
                 runningJobs.append(id)
             }
