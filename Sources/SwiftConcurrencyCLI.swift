@@ -12,7 +12,8 @@ import AsyncAlgorithms
 struct SwiftConcurrencyCLI {
     static func main() async {
         // await sender()
-        try? await jobber(numJobs: 10, inspectEvery: .seconds(1))
+        // try? await jobber(numJobs: 10, inspectEvery: .seconds(1))
+        try? await scraper()
     }
     
     static func sender() async {
@@ -60,5 +61,34 @@ struct SwiftConcurrencyCLI {
             print("[\(id)]: \(jobResult)")
         }
         print("~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+    }
+    
+    static func scraper() async throws {
+        let pageChannel = AsyncChannel<[String]>()
+        let pageProducer
+        let pageConsumer = PageConsumer()
+        
+        Task {
+            for i in 1...5 {
+                print("Scraping pages... \(i)")
+                await pageChannel.send([
+                    "https://google-\(i).com",
+                    "https://x-\(i).com",
+                    "https://facebook-\(i).com",
+                    "https://openai-\(i).com",
+                    "https://netflix-\(i).com",
+                    "https://amazon-\(i).com",
+                    "https://anthropic-\(i).ai",
+                    "https://apple-\(i).com"
+                ])
+                try await Task.sleep(for: .seconds(5))
+            }
+        }
+        
+        for await pages in pageChannel {
+            Task {
+                try await pageConsumer.consume(pages: pages)
+            }
+        }
     }
 }
